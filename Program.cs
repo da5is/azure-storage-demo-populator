@@ -31,6 +31,20 @@ public class Program
 
     private static readonly Random Rand = new();
 
+    // Cost tracking
+    private static decimal _cumulativeCost = 0;
+    private static readonly object _costLock = new object();
+
+    // Cost estimates per 10,000 operations (USD)
+    private static class CostEstimates
+    {
+        public const decimal BlobWriteOperations = 0.055m; // per 10,000 operations
+        public const decimal BlobReadOperations = 0.004m;  // per 10,000 operations
+        public const decimal TableOperations = 0.05m;     // per 10,000 operations
+        public const decimal QueueOperations = 0.04m;     // per 10,000 operations
+        public const decimal FileOperations = 0.06m;      // per 10,000 operations
+    }
+
     // Per-account context holding resource pools
     private class StorageContext
     {
@@ -41,6 +55,27 @@ public class Program
         public List<TableClient> Tables = new();
         public List<QueueClient> Queues = new();
         public List<ShareClient> Shares = new();
+    }
+
+    private static decimal CalculateOperationCost(decimal costPer10k, int operationCount)
+    {
+        return (costPer10k / 10000) * operationCount;
+    }
+
+    private static void AddToCumulativeCost(decimal cost)
+    {
+        lock (_costLock)
+        {
+            _cumulativeCost += cost;
+        }
+    }
+
+    private static decimal GetCumulativeCost()
+    {
+        lock (_costLock)
+        {
+            return _cumulativeCost;
+        }
     }
 
     // Speed profiles tune batch sizes & pacing
@@ -122,6 +157,11 @@ public class Program
             initTasks.Add(InitResourcesForAccount(acct));
         await Task.WhenAll(initTasks);
         Console.WriteLine("Initialization complete.");
+
+        // Print table header
+        Console.WriteLine("┌──────────┬───────┬───────┬─────────────┬─────────────┬─────────────┐");
+        Console.WriteLine("│   Time   │ Type  │ Count │  Resource   │       Cost  │     Total   │");
+        Console.WriteLine("├──────────┼───────┼───────┼─────────────┼─────────────┼─────────────┤");
 
         _startUtc = DateTime.UtcNow;
 
@@ -328,7 +368,11 @@ public class Program
     private static async Task UploadBlobs(StorageContext acct, int count)
     {
         var container = acct.Containers[Rand.Next(acct.Containers.Count)];
-        Console.WriteLine($"[{DateTime.UtcNow:HH:mm:ss}] Blobs: {count} => {container.Name}");
+        var operationCost = CalculateOperationCost(CostEstimates.BlobWriteOperations, count);
+        AddToCumulativeCost(operationCost);
+        var cumulative = GetCumulativeCost();
+        
+        Console.WriteLine($"│ {DateTime.UtcNow:HH:mm:ss} │ Blobs │ {count,5} │ {container.Name,-11} │ ${operationCost,10:F6} │ ${cumulative,10:F6} │");
         var tasks = new List<Task>(capacity: count);
 
         for (int i = 0; i < count; i++)
@@ -348,7 +392,11 @@ public class Program
     private static async Task InsertTableRows(StorageContext acct, int count)
     {
         var table = acct.Tables[Rand.Next(acct.Tables.Count)];
-        Console.WriteLine($"[{DateTime.UtcNow:HH:mm:ss}] Table: {count} => {table.Name}");
+        var operationCost = CalculateOperationCost(CostEstimates.TableOperations, count);
+        AddToCumulativeCost(operationCost);
+        var cumulative = GetCumulativeCost();
+        
+        Console.WriteLine($"│ {DateTime.UtcNow:HH:mm:ss} │ Table │ {count,5} │ {table.Name,-11} │ ${operationCost,10:F6} │ ${cumulative,10:F6} │");
         var tasks = new List<Task>(capacity: count);
 
         for (int i = 0; i < count; i++)
@@ -373,7 +421,11 @@ public class Program
     private static async Task AddQueueMessages(StorageContext acct, int count)
     {
         var queue = acct.Queues[Rand.Next(acct.Queues.Count)];
-        Console.WriteLine($"[{DateTime.UtcNow:HH:mm:ss}] Queue: {count} => {queue.Name}");
+        var operationCost = CalculateOperationCost(CostEstimates.QueueOperations, count);
+        AddToCumulativeCost(operationCost);
+        var cumulative = GetCumulativeCost();
+        
+        Console.WriteLine($"│ {DateTime.UtcNow:HH:mm:ss} │ Queue │ {count,5} │ {queue.Name,-11} │ ${operationCost,10:F6} │ ${cumulative,10:F6} │");
         var tasks = new List<Task>(capacity: count);
 
         for (int i = 0; i < count; i++)
@@ -394,8 +446,11 @@ public class Program
     {
         var share = acct.Shares[Rand.Next(acct.Shares.Count)];
         var root = share.GetRootDirectoryClient(); // root exists by definition
+        var operationCost = CalculateOperationCost(CostEstimates.FileOperations, count * 2); // File creation + upload = 2 operations
+        AddToCumulativeCost(operationCost);
+        var cumulative = GetCumulativeCost();
 
-        Console.WriteLine($"[{DateTime.UtcNow:HH:mm:ss}] Files: {count} => {share.Name}");
+        Console.WriteLine($"│ {DateTime.UtcNow:HH:mm:ss} │ Files │ {count,5} │ {share.Name,-11} │ ${operationCost,10:F6} │ ${cumulative,10:F6} │");
         var tasks = new List<Task>(count);
 
         for (int i = 0; i < count; i++)
