@@ -401,7 +401,7 @@ public class Program
 
         for (int i = 0; i < count; i++)
         {
-            tasks.Add(Task.Run(() =>
+            tasks.Add(Task.Run(async () =>
             {
                 var entity = new TableEntity(
                     partitionKey: "p" + Rand.Next(1, 101).ToString(), // spread partition keys 1..100
@@ -411,7 +411,16 @@ public class Program
                     { "TsUtc", DateTime.UtcNow },
                     { "Shard", Rand.Next(0, 1024) }
                 };
-                return table.AddEntityAsync(entity);
+                try
+                {
+                    await table.AddEntityAsync(entity);
+                }
+                catch (Azure.RequestFailedException ex) when (ex.Status == 409 && ex.ErrorCode == "EntityAlreadyExists")
+                {
+                    // Entity already exists - this is expected in high-concurrency scenarios
+                    // Just log and continue without failing the operation
+                    Console.WriteLine($"│ Entity already exists: {entity.PartitionKey}/{entity.RowKey} - continuing...");
+                }
             }));
         }
 
